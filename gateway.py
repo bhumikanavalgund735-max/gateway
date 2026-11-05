@@ -1,7 +1,9 @@
 import hmac
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
+from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener, ProxyHandler, HTTPSHandler
 
 
@@ -19,6 +21,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
+        t0 = time.time()
         try:
             if self.path != '/gateway' or not hmac.compare_digest(
                     self.headers.get('Authorization',''), 'Bearer '+os.environ['TEAM_GATEWAY_TOKEN']):
@@ -36,15 +39,34 @@ class Handler(BaseHTTPRequestHandler):
             payload = {'model': model, 'messages': frame['messages'],
                        'max_tokens': frame['max_output_tokens']}
             if 'gpt-oss' in model:
-                payload['max_tokens'] = max(frame['max_output_tokens'], 1500)
+                payload['max_tokens'] = max(min(frame['max_output_tokens'], 1000), 700)
                 payload['reasoning_effort'] = 'low'
-            request = Request(url, data=json.dumps(payload).encode(),
-                headers={'Content-Type':'application/json', 'Accept':'application/json',
-                         'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
-                         'Authorization':'Bearer '+os.environ['TEAM_PROVIDER_KEY'].strip()})
+            data = json.dumps(payload).encode()
+            headers = {'Content-Type':'application/json', 'Accept':'application/json',
+                       'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
+                       'Authorization':'Bearer '+os.environ['TEAM_PROVIDER_KEY'].strip()}
             opener = build_opener(ProxyHandler({}), HTTPSHandler(), NoProviderRedirect())
-            with opener.open(request, timeout=35) as response:
-                raw = response.read(131073)
+            raw = None
+            for attempt in range(6):
+                remaining = 40 - (time.time() - t0)
+                if remaining < 4:
+                    raise ValueError('out of time')
+                try:
+                    with opener.open(Request(url, data=data, headers=headers), timeout=min(30, remaining)) as response:
+                        raw = response.read(131073)
+                    break
+                except HTTPError as he:
+                    if he.code == 429 and (time.time() - t0) < 32:
+                        wait = 6
+                        try:
+                            wait = min(12, max(2, float(he.headers.get('retry-after', 6)) + 1))
+                        except Exception:
+                            pass
+                        print('RETRY 429 wait', wait, flush=True)
+                        time.sleep(wait)
+                        continue
+                    raise
+            if raw is None: raise ValueError('no reply')
             if len(raw)>131072: raise ValueError('too big')
             result=json.loads(raw)
             text=result['choices'][0]['message']['content']
