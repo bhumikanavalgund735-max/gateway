@@ -32,8 +32,13 @@ class Handler(BaseHTTPRequestHandler):
             if type(frame['max_output_tokens']) is not int or not 16 <= frame['max_output_tokens'] <= 2048: raise ValueError('tokens')
             url = os.environ['TEAM_PROVIDER_URL'].strip()
             if not url.startswith('https://'): raise ValueError('url')
-           request = Request(url, data=json.dumps({'model':os.environ['TEAM_MODEL'].strip(),
-                'messages':frame['messages'], 'max_tokens':max(frame['max_output_tokens'],1024), 'reasoning_effort':'low'}).encode(),
+            model = os.environ['TEAM_MODEL'].strip()
+            payload = {'model': model, 'messages': frame['messages'],
+                       'max_tokens': frame['max_output_tokens']}
+            if 'gpt-oss' in model:
+                payload['max_tokens'] = max(frame['max_output_tokens'], 1500)
+                payload['reasoning_effort'] = 'low'
+            request = Request(url, data=json.dumps(payload).encode(),
                 headers={'Content-Type':'application/json', 'Accept':'application/json',
                          'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
                          'Authorization':'Bearer '+os.environ['TEAM_PROVIDER_KEY'].strip()})
